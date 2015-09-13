@@ -204,3 +204,18 @@ func (c *Client) Command(cmd string, expectCode int) (int, string, error) {
 	}
 	return c.conn.ReadCodeLine(expectCode)
 }
+
+func (c *Client) MultilineCommand(cmd string, expectCode int) (int, []string, error) {
+	err := c.conn.PrintfLine(cmd)
+	if err != nil {
+		return 0, nil, err
+	}
+	rc, l, err := c.conn.ReadCodeLine(expectCode)
+	if err != nil {
+		return rc, nil, err
+	}
+	lines := []string{l}
+	ls, err := c.conn.ReadDotLines()
+	lines = append(lines, ls...)
+	return rc, lines, err
+}
