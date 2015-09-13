@@ -2,12 +2,14 @@
 package nntpclient
 
 import (
+	"bufio"
 	"errors"
 	"io"
 	"net/textproto"
 	"strconv"
 	"strings"
 
+	"github.com/golang/glog"
 	"github.com/wathiede/go-nntp"
 )
 
@@ -164,6 +166,63 @@ func (c *Client) articleish(expected int) (int64, string, io.Reader, error) {
 		return 0, "", nil, err
 	}
 	return n, parts[1], c.conn.DotReader(), nil
+}
+
+type Overview struct {
+	Headers textproto.MIMEHeader
+	Err     error
+}
+
+func (c *Client) XOver(specifier string) (<-chan Overview, error) {
+	headers := []string{"Article"}
+	headerFull := map[string]bool{}
+
+	_, lines, err := c.MultilineCommand("LIST OVERVIEW.FMT", 215)
+	if err != nil {
+		return nil, err
+	}
+	glog.Infof("LIST OVERVIEW.FMT\n  %s", strings.Join(lines, "  \n"))
+	for _, l := range lines[1:] {
+		parts := strings.SplitN(l, ":", 2)
+		h := parts[0]
+		full := parts[1] == "full"
+		headers = append(headers, h)
+		headerFull[h] = full
+	}
+
+	// One message per-line, tab-separated, in the following order:
+	//   subject, author, date, message-id, references, byte count, and line
+	//   count [, optional fields, based on LIST OVERVIEW.FMT output.
+	if err := c.conn.PrintfLine("XOVER %s", specifier); err != nil {
+		return nil, err
+	}
+
+	if _, _, err := c.conn.ReadCodeLine(224); err != nil {
+		return nil, err
+	}
+
+	ch := make(chan Overview)
+	go func() {
+		scanner := bufio.NewScanner(c.conn.DotReader())
+		for scanner.Scan() {
+			o := Overview{Headers: textproto.MIMEHeader{}}
+			l := scanner.Text()
+			for i, val := range strings.Split(l, "\t") {
+				h := headers[i]
+				if headerFull[h] {
+					parts := strings.SplitN(val, ":", 2)
+					val = parts[1]
+				}
+				o.Headers.Set(h, val)
+			}
+			ch <- o
+		}
+		if err := scanner.Err(); err != nil {
+			ch <- Overview{Err: err}
+		}
+		close(ch)
+	}()
+	return ch, nil
 }
 
 // Post a new article
