@@ -3,6 +3,7 @@ package nntpclient
 
 import (
 	"bufio"
+	"compress/zlib"
 	"errors"
 	"io"
 	"net/textproto"
@@ -173,7 +174,13 @@ type Overview struct {
 	Err     error
 }
 
-func (c *Client) XOver(specifier string) (<-chan Overview, error) {
+// XOver issues the XOVER verb across the range of messages specified in
+// specifier.  If compress is true, the XZVER verb will be used instead.
+func (c *Client) XOver(specifier string, compress bool) (<-chan Overview, error) {
+	verb := "XOVER"
+	if compress {
+		verb = "XZVER"
+	}
 	headers := []string{"Article"}
 	headerFull := map[string]bool{}
 
@@ -181,7 +188,7 @@ func (c *Client) XOver(specifier string) (<-chan Overview, error) {
 	if err != nil {
 		return nil, err
 	}
-	glog.Infof("LIST OVERVIEW.FMT\n  %s", strings.Join(lines, "  \n"))
+	glog.Infof("LIST OVERVIEW.FMT\n  %s", strings.Join(lines, "\n  "))
 	for _, l := range lines[1:] {
 		parts := strings.SplitN(l, ":", 2)
 		h := parts[0]
@@ -193,17 +200,32 @@ func (c *Client) XOver(specifier string) (<-chan Overview, error) {
 	// One message per-line, tab-separated, in the following order:
 	//   subject, author, date, message-id, references, byte count, and line
 	//   count [, optional fields, based on LIST OVERVIEW.FMT output.
-	if err := c.conn.PrintfLine("XOVER %s", specifier); err != nil {
+	if err := c.conn.PrintfLine("%s %s", verb, specifier); err != nil {
 		return nil, err
 	}
-
-	if _, _, err := c.conn.ReadCodeLine(224); err != nil {
+	if _, msg, err := c.conn.ReadCodeLine(224); err != nil {
 		return nil, err
+	} else {
+		glog.Infof("224 %s", msg)
 	}
 
 	ch := make(chan Overview)
 	go func() {
-		scanner := bufio.NewScanner(c.conn.DotReader())
+		defer close(ch)
+		var r io.Reader
+		if compress {
+			zr, err := zlib.NewReader(c.conn.R)
+			if err != nil {
+				ch <- Overview{Err: err}
+				return
+			}
+			defer zr.Close()
+			r = zr
+		} else {
+			r = c.conn.DotReader()
+		}
+
+		scanner := bufio.NewScanner(r)
 		for scanner.Scan() {
 			o := Overview{Headers: textproto.MIMEHeader{}}
 			l := scanner.Text()
@@ -220,7 +242,6 @@ func (c *Client) XOver(specifier string) (<-chan Overview, error) {
 		if err := scanner.Err(); err != nil {
 			ch <- Overview{Err: err}
 		}
-		close(ch)
 	}()
 	return ch, nil
 }
