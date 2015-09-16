@@ -221,6 +221,11 @@ func (c *Client) XOver(specifier string, compress bool) (<-chan Overview, error)
 			}
 			defer zr.Close()
 			r = zr
+			defer func() {
+				// Drain random 4 bytes at end of message, checksum of some sort?
+				var p [4]byte
+				c.conn.R.Read(p[:])
+			}()
 		} else {
 			r = c.conn.DotReader()
 		}
@@ -229,6 +234,9 @@ func (c *Client) XOver(specifier string, compress bool) (<-chan Overview, error)
 		for scanner.Scan() {
 			o := Overview{Headers: textproto.MIMEHeader{}}
 			l := scanner.Text()
+			if "." == l {
+				return
+			}
 			for i, val := range strings.Split(l, "\t") {
 				h := headers[i]
 				if headerFull[h] {
